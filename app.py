@@ -242,6 +242,8 @@ def run_gcp(job):
     if not operation_name or not operation_name.startswith("projects/"):
         raise RuntimeError("GCP returned no valid operation name: " + str(operation)[:500])
     with connect() as con:
+        con.execute("UPDATE jobs SET result=?,updated_at=? WHERE id=?",
+                    (json.dumps({"operation": operation_name, "state": "submitted"}), now(), job["id"]))
         event(con, job["id"], "GCP operation: " + operation_name)
     deadline = time.monotonic() + int(os.getenv("GCP_POLL_TIMEOUT_SECONDS", "7200"))
     while time.monotonic() < deadline and not STOP.is_set():
@@ -250,7 +252,20 @@ def run_gcp(job):
         if operation.get("done"):
             if operation.get("error"):
                 raise RuntimeError("GCP execution failed: " + json.dumps(operation["error"])[:1200])
-            return {"operation": operation_name, "response": operation.get("response", {})}
+            result = {"operation": operation_name, "response": operation.get("response", {})}
+            bucket = os.getenv("AI_LAB_RESULTS_BUCKET", "").strip()
+            if bucket:
+                # Cloud worker uploads result.json after processing; this is an optional
+                # convenience, not a second source of execution status.
+                uri = "gs://{}/ai-lab/jobs/{}/result.json".format(bucket, job["id"])
+                result["result_uri"] = uri
+                try:
+                    downloaded = subprocess.run(["gcloud", "storage", "cat", uri],
+                                                capture_output=True, text=True, timeout=40, check=True)
+                    result["artifact"] = json.loads(downloaded.stdout)
+                except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                    result["artifact_error"] = "Cloud execution succeeded but result download failed: " + str(exc)[:500]
+            return result
     raise RuntimeError("GCP execution still unknown after polling stopped; inspect operation " + operation_name)
 
 
@@ -320,7 +335,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             parts = self.path.split("?")[0].strip("/").split("/")
             if parts == ["api", "health"] and method == "GET":
-                return self.send_json({"ok": True, "version": "0.1", "providers": sorted(VALID_PROVIDERS)})
+                return self.send_json({"ok": True, "version": "0.2", "providers": sorted(VALID_PROVIDERS),
+                                       "gcp_configured": all(os.getenv(k) for k in ("GCP_PROJECT", "GCP_REGION", "GCP_JOB")),
+                                       "gcp_project": os.getenv("GCP_PROJECT", ""),
+                                       "gcp_region": os.getenv("GCP_REGION", ""),
+                                       "gcp_job": os.getenv("GCP_JOB", "")})
             if parts == ["api", "jobs"]:
                 if method == "GET":
                     with connect() as con:
