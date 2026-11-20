@@ -22,7 +22,7 @@ DATA_DIR = Path(os.getenv("AI_LAB_DATA_DIR", str(ROOT / "data"))).expanduser()
 DB = DATA_DIR / "jobs.sqlite3"
 HOST = os.getenv("AI_LAB_HOST", "127.0.0.1")
 PORT = int(os.getenv("AI_LAB_PORT", "8765"))
-VALID_PROVIDERS = {"local-demo", "gcp-cloud-run", "webhook"}
+VALID_PROVIDERS = {"local-demo", "gcp-cloud-run", "webhook", "runpod-secure", "runpod-community"}
 VALID_STATUSES = {"draft", "queued", "running", "completed", "failed", "cancelled", "interrupted"}
 STOP = threading.Event()
 
@@ -104,7 +104,7 @@ def validate(data, partial=False):
             raise ValueError("Title must have 1-160 characters.")
     if not partial or "provider" in data:
         if data.get("provider") not in VALID_PROVIDERS:
-            raise ValueError("Choose local-demo, gcp-cloud-run, or webhook.")
+            raise ValueError("Choose a supported execution provider.")
     if "payload" in data and (not isinstance(data["payload"], dict) or len(json.dumps(data["payload"])) > 100000):
         raise ValueError("Payload must be a JSON object smaller than 100 KB.")
     if "enqueue" in data and not isinstance(data["enqueue"], bool):
@@ -364,6 +364,9 @@ def execute(job):
                 "input": job["payload"]}
     if job["provider"] == "gcp-cloud-run":
         return run_gcp(job)
+    if job["provider"] in ("runpod-secure", "runpod-community"):
+        import runpod_backend
+        return runpod_backend.run(job)
     if job["provider"] == "webhook":
         return run_webhook(job)
     raise RuntimeError("Unsupported provider.")
@@ -406,8 +409,18 @@ def read_image(job_id):
     job = get_job(job_id)
     if not job:
         raise LookupError("Job not found.")
-    if job["status"] != "completed" or job["provider"] != "gcp-cloud-run":
-        raise RuntimeError("Only completed GCP jobs can serve images.")
+    if job["status"] != "completed":
+        raise RuntimeError("Only completed jobs can serve images.")
+    if job["provider"] in ("runpod-secure", "runpod-community"):
+        path = DATA_DIR / "artifacts" / (job["id"] + ".png")
+        if not path.is_file():
+            raise LookupError("RunPod image artifact not present locally.")
+        raw = path.read_bytes()
+        if len(raw) > 15000000 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RuntimeError("Invalid local PNG.")
+        return raw
+    if job["provider"] != "gcp-cloud-run":
+        raise RuntimeError("Unsupported image provider.")
     uri = image_object_path(job)
     raw = subprocess.run(["gcloud", "storage", "cat", uri],
                          capture_output=True, timeout=90, check=True)
@@ -445,7 +458,8 @@ class Handler(BaseHTTPRequestHandler):
                                        "gcp_region": os.getenv("GCP_REGION", ""),
                                        "gcp_job": os.getenv("GCP_JOB", ""),
                                        "gcp_image_job": os.getenv("GCP_IMAGE_JOB", ""),
-                                       "results_bucket_configured": bool(os.getenv("AI_LAB_RESULTS_BUCKET"))})
+                                       "results_bucket_configured": bool(os.getenv("AI_LAB_RESULTS_BUCKET")),
+                                       "runpod_configured": bool(os.getenv("RUNPOD_API_KEY") and os.getenv("RUNPOD_IMAGE"))})
             if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "image" and method == "GET":
                 binary = read_image(parts[2])
                 self.send_response(200)
@@ -516,6 +530,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     init_db()
+    import runpod_backend
+    runpod_backend.cleanup_orphans()
     thread = threading.Thread(target=worker, name="ai-lab-dispatcher", daemon=True)
     thread.start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
