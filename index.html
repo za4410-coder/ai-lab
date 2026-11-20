@@ -28,7 +28,7 @@ strong{font-weight:650}.muted{color:#899bb4}.mono{font-family:ui-monospace,SFMon
 textarea{resize:vertical;min-height:140px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.dialog-footer{display:flex;justify-content:flex-end;gap:9px;margin-top:24px}
 .check{display:flex;gap:9px;align-items:center;margin-top:17px;color:#b9c8db}.check input{accent-color:#538afa}.detail-list{display:grid;grid-template-columns:120px 1fr;gap:12px;margin:14px 0}.detail-list dt{color:#8da0ba}.detail-list dd{margin:0;overflow-wrap:anywhere}
 pre{background:#090f18;border:1px solid #28364d;border-radius:10px;padding:13px;overflow:auto;max-height:260px;font-size:12px;white-space:pre-wrap;word-break:break-word}
-.event{padding:9px 0;border-bottom:1px solid #263347;font-size:12px;color:#bdcce0}.event time{color:#8395af;margin-right:12px}
+.result-card{background:#112d28;border:1px solid #2b6c58;border-radius:12px;padding:18px;margin-top:16px;color:#d7f9e9}.result-card h3{font-size:13px;margin:0 0 10px;color:#84e3b8}.result-value{font-size:18px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.result-meta{font-size:12px;color:#a5d1bd;margin-top:8px}.result-pending{font-size:12px;color:#a4b6ce;margin-top:14px}.event{padding:9px 0;border-bottom:1px solid #263347;font-size:12px;color:#bdcce0}.event time{color:#8395af;margin-right:12px}
 @media(max-width:950px){.shell{display:block}.sidebar{padding:14px 20px;display:flex;align-items:center;gap:25px}.brand{padding:0;font-size:20px}.brand small,.sidebar-note{display:none}.nav{padding:8px 12px}main{padding:25px 16px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.tablewrap{overflow:auto}table{min-width:820px}}
 @media(max-width:520px){header{align-items:flex-start}header h1{font-size:24px}.stats{gap:9px}.stat{padding:14px}.stat .num{font-size:25px}.panel-head{align-items:stretch}.controls{width:100%}.controls .input{width:50%}}
 </style>
@@ -131,13 +131,47 @@ function openEditor(job=null) {
  };
  $("title").focus();
 }
+function humanResult(j) {
+ const result=j.result||{};
+ const artifact=result.artifact;
+ if (j.status!=="completed") return "";
+ if (artifact && typeof artifact==="object") {
+   const output=artifact.output||{};
+   const primary=output.echo ?? output.sha256 ?? (output.slept_seconds!==undefined ? "Slept "+output.slept_seconds+" seconds" : null);
+   const readable=primary!==null ? String(primary) : JSON.stringify(output,null,2);
+   return '<section class="result-card"><h3>✓ Worker output</h3><div class="result-value">'+esc(readable)+'</div><div class="result-meta">Task: '+esc(artifact.task||"unknown")+(artifact.duration_seconds!==undefined?' · Duration: '+esc(artifact.duration_seconds)+' seconds':'')+'</div></section>';
+ }
+ if(j.provider==="local-demo" && result.message){
+   return '<section class="result-card"><h3>✓ Local output</h3><div class="result-value">'+esc(result.message)+'</div></section>';
+ }
+ if(j.provider==="gcp-cloud-run"){
+   return '<div class="result-pending">Cloud execution finished. The worker output has not been retrieved yet. You can fetch it from Cloud Logging without rerunning the job.</div>';
+ }
+ return "";
+}
 async function showDetails(id) {
  const j=await api("/jobs/"+id);
  const dl=[["ID",j.id],["Provider",j.provider],["Status",j.status],["Created",prettyDate(j.created_at)],["Started",prettyDate(j.started_at)],["Finished",prettyDate(j.finished_at)],["Attempts",j.attempts]];
  const details=dl.map(([k,v])=>'<dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd>').join("");
  const events=(j.events||[]).map(ev=>'<div class="event"><time>'+esc(prettyDate(ev.created_at))+'</time>'+esc(ev.message)+'</div>').join("");
- openModal('<h2>'+esc(j.title)+'</h2><dl class="detail-list">'+details+'</dl><label class="field">Payload</label><pre>'+esc(JSON.stringify(j.payload,null,2))+'</pre>'+(j.error?'<label class="field">Error</label><pre>'+esc(j.error)+'</pre>':'')+(j.result?'<label class="field">Result</label><pre>'+esc(JSON.stringify(j.result,null,2))+'</pre>':'')+'<label class="field">Activity log</label>'+(events||'<p>No events</p>')+'<div class="dialog-footer"><button class="btn" id="close">Close</button></div>');
+ const canFetch=j.provider==="gcp-cloud-run" && j.status==="completed" && !j.result?.artifact;
+ const fetchBtn=canFetch?'<button class="btn primary" type="button" id="fetch-result">Fetch worker result</button>':"";
+ openModal('<h2>'+esc(j.title)+'</h2><dl class="detail-list">'+details+'</dl>'+humanResult(j)+'<div id="fetch-error" style="color:#ffb4b4;margin:10px 0"></div><label class="field">Payload</label><pre>'+esc(JSON.stringify(j.payload,null,2))+'</pre>'+(j.error?'<label class="field">Error</label><pre>'+esc(j.error)+'</pre>':'')+(j.result?'<label class="field">Technical result</label><pre>'+esc(JSON.stringify(j.result,null,2))+'</pre>':'')+'<label class="field">Activity log</label>'+(events||'<p>No events</p>')+'<div class="dialog-footer">'+fetchBtn+'<button class="btn" id="close">Close</button></div>');
  $("close").onclick=closeModal;
+ if(canFetch) $("fetch-result").onclick=async()=>{
+   const button=$("fetch-result");
+   button.disabled=true;
+   button.textContent="Fetching…";
+   try {
+     await api("/jobs/"+id+"/fetch-result",{method:"POST"});
+     await showDetails(id);
+     await refresh();
+   } catch(err){
+     $("fetch-error").textContent=err.message;
+     button.disabled=false;
+     button.textContent="Try again";
+   }
+ };
 }
 $("jobs").addEventListener("click",async e=>{
  const button=e.target.closest("button[data-action]");
