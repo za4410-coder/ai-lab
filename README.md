@@ -22,6 +22,82 @@ You can customize the port and database directory:
 AI_LAB_PORT=9000 AI_LAB_DATA_DIR="$HOME/.ai-lab" python3 app.py
 ~~~
 
+## GCP Cloud Run worker — end-to-end setup (v0.2)
+
+This repository now contains a **real, deployable Cloud Run Job container** in `gcp_worker/`. It runs safe CPU-only validation tasks, not GPU video inference. Deployment is opt-in; nothing has been deployed into your GCP account.
+
+### Prerequisites
+
+1. Have a Google Cloud project with billing enabled and permissions to deploy Cloud Run Jobs and build source images.
+2. Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) on your Mac, then run `gcloud auth login`.
+3. Set the target project and region:
+
+~~~bash
+export GCP_PROJECT="YOUR_PROJECT_ID"
+export GCP_REGION="us-central1"
+export GCP_JOB="ai-lab-worker"
+gcloud config set project "$GCP_PROJECT"
+~~~
+
+### Optional: persist result.json in Cloud Storage
+
+Create a dedicated, **private** bucket with a globally unique name if you want result JSON shown in the local dashboard. The bucket must be in an appropriate region.
+
+~~~bash
+export AI_LAB_RESULTS_BUCKET="YOUR_UNIQUE_BUCKET_NAME"
+gcloud storage buckets create "gs://$AI_LAB_RESULTS_BUCKET" --location="$GCP_REGION" --uniform-bucket-level-access
+~~~
+
+For a least-privilege setup, create a dedicated execution service account, grant it object creation for this bucket, and allow your local gcloud identity to read artifacts. Replace placeholders with your actual project ID:
+
+~~~bash
+export GCP_SERVICE_ACCOUNT="ai-lab-worker@$GCP_PROJECT.iam.gserviceaccount.com"
+gcloud iam service-accounts create ai-lab-worker --display-name="AI Lab Cloud Run Worker"
+gcloud storage buckets add-iam-policy-binding "gs://$AI_LAB_RESULTS_BUCKET" \
+  --member="serviceAccount:$GCP_SERVICE_ACCOUNT" --role="roles/storage.objectCreator"
+~~~
+
+Granting permission to deploy a job using that service account may also require `roles/iam.serviceAccountUser` for your deployer identity. The worker service account needs no permissions other than writing the result files. Your local identity needs permission to read files from the bucket (`roles/storage.objectViewer`). Do not create public buckets.
+
+### Deploy from the repo
+
+~~~bash
+chmod +x deploy_gcp.sh
+./deploy_gcp.sh
+~~~
+
+The script enables the Cloud Run, Cloud Build and Artifact Registry APIs and builds/deploys a 1-vCPU, 512-MiB, one-task, max-15-minute **Cloud Run Job** from `gcp_worker/`. It does **not** execute the job during deployment. Google Cloud may charge for builds, storage and executions. Review the deployment settings before running.
+
+Now start the local dashboard from the **same terminal** so it inherits your environment variables:
+
+~~~bash
+python3 app.py
+~~~
+
+Visit http://127.0.0.1:8765, select **New Job → Google Cloud Run Job**, and use this payload:
+
+~~~json
+{"task":"echo","text":"Hello from my Mac"}
+~~~
+
+Check **Queue immediately after saving**. The local controller submits a new GCP execution, records its operation ID, polls completion and displays the returned result. When the bucket is configured, the worker uploads `gs://YOUR_BUCKET/ai-lab/jobs/JOB_ID/result.json`, which the Mac reads into the dashboard. The worker also emits an `AI_LAB_RESULT` structured log line to Cloud Logging.
+
+Additional payloads:
+
+~~~json
+{"task":"sha256","text":"A private test string"}
+~~~
+
+~~~json
+{"task":"sleep","seconds":10}
+~~~
+
+**Execution status note:** Cloud Run operation success means the container completed; this demo doesn't generate media yet. `sleep` is just for validating polling. Cloud Run logs can be viewed with `gcloud run jobs executions list --job="$GCP_JOB" --region="$GCP_REGION"`.
+
+**Safety:** Stop the Mac controller only when jobs are idle if possible. A controller restart marks active jobs `interrupted` and will not automatically resubmit them. Check Cloud Run executions before using Retry to avoid duplicate charges. Workloads and payload arguments may appear in cloud logs and should not contain credentials or sensitive footage. Cloud Run jobs are a managed execution target; later GPU workloads will use a dedicated model container, not this simple CPU test worker.
+
+---
+
 ### First release features
 
 - CRUD job dashboard, filter/search, auto-refresh every 3 seconds, job activity history and results
