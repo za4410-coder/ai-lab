@@ -460,6 +460,11 @@ class Handler(BaseHTTPRequestHandler):
                                        "gcp_image_job": os.getenv("GCP_IMAGE_JOB", ""),
                                        "results_bucket_configured": bool(os.getenv("AI_LAB_RESULTS_BUCKET")),
                                        "runpod_configured": bool(os.getenv("RUNPOD_API_KEY") and os.getenv("RUNPOD_IMAGE"))})
+            if parts == ["api", "runpod", "gpus"] and method == "GET":
+                from urllib.parse import parse_qs, urlsplit
+                import runpod_backend
+                tier = parse_qs(urlsplit(self.path).query).get("cloud", ["SECURE"])[0]
+                return self.send_json({"cloud": tier, "gpus": runpod_backend.available_gpus(tier)})
             if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "image" and method == "GET":
                 binary = read_image(parts[2])
                 self.send_response(200)
