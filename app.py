@@ -230,7 +230,7 @@ def request_json(url, method="GET", body=None, token=None, webhook=False):
 def fetch_gcp_worker_result(job):
     """Fetch AI_LAB_RESULT from Cloud Logging, matching the actual worker job ID."""
     project = os.getenv("GCP_PROJECT", "").strip()
-    name = os.getenv("GCP_JOB", "").strip()
+    name = os.getenv("GCP_IMAGE_JOB" if job.get("payload", {}).get("task") == "image" else "GCP_JOB", "").strip()
     if not project or not name:
         raise RuntimeError("GCP_PROJECT and GCP_JOB are required to read results.")
     filter_parts = [
@@ -292,9 +292,9 @@ def recover_gcp_result(job_id):
 def run_gcp(job):
     project = os.getenv("GCP_PROJECT", "").strip()
     region = os.getenv("GCP_REGION", "").strip()
-    name = os.getenv("GCP_JOB", "").strip()
+    name = os.getenv("GCP_IMAGE_JOB" if job["payload"].get("task") == "image" else "GCP_JOB", "").strip()
     if not all((project, region, name)):
-        raise RuntimeError("Set GCP_PROJECT, GCP_REGION and GCP_JOB in your environment.")
+        raise RuntimeError("Set GCP_PROJECT, GCP_REGION and the relevant GCP_JOB or GCP_IMAGE_JOB.")
     # Cloud Run Job container should accept one JSON command-line argument.
     url = "https://run.googleapis.com/v2/projects/{}/locations/{}/jobs/{}:run".format(project, region, name)
     payload_string = json.dumps({"job_id": job["id"], "payload": job["payload"]})
@@ -388,6 +388,34 @@ def worker():
                 event(con, job["id"], "Execution failed: " + str(exc)[:1000])
 
 
+
+def image_object_path(job):
+    artifact = (job.get("result") or {}).get("artifact") or {}
+    output = artifact.get("output") or {}
+    uri = output.get("image_uri", "")
+    if not isinstance(uri, str) or not uri.startswith("gs://"):
+        raise LookupError("This job has no generated image artifact.")
+    bucket = os.getenv("AI_LAB_RESULTS_BUCKET", "")
+    expected = "gs://{}/ai-lab/jobs/{}/image.png".format(bucket, job["id"])
+    if not bucket or uri != expected:
+        raise ValueError("Image path does not match configured result bucket and job ID.")
+    return uri
+
+
+def read_image(job_id):
+    job = get_job(job_id)
+    if not job:
+        raise LookupError("Job not found.")
+    if job["status"] != "completed" or job["provider"] != "gcp-cloud-run":
+        raise RuntimeError("Only completed GCP jobs can serve images.")
+    uri = image_object_path(job)
+    raw = subprocess.run(["gcloud", "storage", "cat", uri],
+                         capture_output=True, timeout=90, check=True)
+    if len(raw.stdout) > 20 * 1024 * 1024 or not raw.stdout.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        raise RuntimeError("Result is not a valid PNG image under 20 MB.")
+    return raw.stdout
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[%s] %s" % (self.log_date_time_string(), fmt % args), flush=True)
@@ -415,7 +443,18 @@ class Handler(BaseHTTPRequestHandler):
                                        "gcp_configured": all(os.getenv(k) for k in ("GCP_PROJECT", "GCP_REGION", "GCP_JOB")),
                                        "gcp_project": os.getenv("GCP_PROJECT", ""),
                                        "gcp_region": os.getenv("GCP_REGION", ""),
-                                       "gcp_job": os.getenv("GCP_JOB", "")})
+                                       "gcp_job": os.getenv("GCP_JOB", ""),
+                                       "gcp_image_job": os.getenv("GCP_IMAGE_JOB", ""),
+                                       "results_bucket_configured": bool(os.getenv("AI_LAB_RESULTS_BUCKET"))})
+            if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "image" and method == "GET":
+                binary = read_image(parts[2])
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(binary)))
+                self.send_header("Cache-Control", "private, max-age=60")
+                self.end_headers()
+                self.wfile.write(binary)
+                return
             if parts == ["api", "jobs"]:
                 if method == "GET":
                     with connect() as con:
