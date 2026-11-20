@@ -11,3 +11,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m unittest discover -v -p 'test_*.py'
+      - name: Check dashboard JavaScript syntax
+        run: |
+          python -c 'from pathlib import Path; import re; source=Path("index.html").read_text(); scripts=re.findall(r"<script[^>]*>(.*?)</script>", source, re.S); assert scripts, "Missing dashboard script"; Path("/tmp/ai-lab-dashboard.js").write_text("\n".join(scripts))'
+          node --check /tmp/ai-lab-dashboard.js
