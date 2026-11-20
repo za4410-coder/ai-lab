@@ -226,6 +226,69 @@ def request_json(url, method="GET", body=None, token=None, webhook=False):
         raise RuntimeError("Provider HTTP " + str(exc.code) + ": " + detail) from exc
 
 
+
+def fetch_gcp_worker_result(job):
+    """Fetch AI_LAB_RESULT from Cloud Logging, matching the actual worker job ID."""
+    project = os.getenv("GCP_PROJECT", "").strip()
+    name = os.getenv("GCP_JOB", "").strip()
+    if not project or not name:
+        raise RuntimeError("GCP_PROJECT and GCP_JOB are required to read results.")
+    filter_parts = [
+        'resource.type="cloud_run_job"',
+        'resource.labels.job_name="' + name.replace('"', '') + '"',
+        'textPayload:"AI_LAB_RESULT"'
+    ]
+    if job.get("started_at"):
+        filter_parts.append('timestamp>="' + job["started_at"] + '"')
+    query = {"resourceNames": ["projects/" + project],
+             "filter": " AND ".join(filter_parts),
+             "orderBy": "timestamp desc", "pageSize": 100}
+    token = gcp_token()
+    for _ in range(5):
+        response = request_json("https://logging.googleapis.com/v2/entries:list",
+                                method="POST", body=query, token=token)
+        for entry in response.get("entries", []):
+            line = entry.get("textPayload", "")
+            if not line and isinstance(entry.get("jsonPayload"), dict):
+                line = entry["jsonPayload"].get("message", "")
+            if not isinstance(line, str):
+                continue
+            marker = "AI_LAB_RESULT "
+            at = line.find(marker)
+            if at < 0:
+                continue
+            try:
+                artifact = json.loads(line[at + len(marker):])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(artifact, dict) and artifact.get("job_id") == job["id"]:
+                return artifact
+        if not response.get("nextPageToken"):
+            break
+        query["pageToken"] = response["nextPageToken"]
+    return None
+
+
+def recover_gcp_result(job_id):
+    job = get_job(job_id)
+    if not job:
+        raise LookupError("Job not found.")
+    if job["provider"] != "gcp-cloud-run" or job["status"] != "completed":
+        raise RuntimeError("Result retrieval requires a completed GCP job.")
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    if result.get("artifact"):
+        return job
+    artifact = fetch_gcp_worker_result(job)
+    if artifact is None:
+        raise RuntimeError("No matching worker result found in Cloud Logging. "
+                           "Wait for log ingestion or check Cloud Run logs and roles/logging.viewer.")
+    with connect() as con:
+        con.execute("UPDATE jobs SET result=?,updated_at=? WHERE id=?",
+                    (json.dumps({**result, "artifact": artifact}), now(), job_id))
+        event(con, job_id, "Worker result retrieved from Cloud Logging")
+    return get_job(job_id)
+
+
 def run_gcp(job):
     project = os.getenv("GCP_PROJECT", "").strip()
     region = os.getenv("GCP_REGION", "").strip()
@@ -265,6 +328,19 @@ def run_gcp(job):
                     result["artifact"] = json.loads(downloaded.stdout)
                 except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                     result["artifact_error"] = "Cloud execution succeeded but result download failed: " + str(exc)[:500]
+            if not result.get("artifact"):
+                for attempt in range(3):
+                    try:
+                        artifact = fetch_gcp_worker_result(job)
+                        if artifact:
+                            result["artifact"] = artifact
+                            result["artifact_source"] = "cloud-logging"
+                            break
+                    except Exception as exc:
+                        result["artifact_error"] = "Log retrieval: " + str(exc)[:500]
+                        break
+                    if attempt < 2:
+                        time.sleep(3)
             return result
     raise RuntimeError("GCP execution still unknown after polling stopped; inspect operation " + operation_name)
 
@@ -364,6 +440,8 @@ class Handler(BaseHTTPRequestHandler):
                         delete_job(jid)
                         return self.send_json({"deleted": True})
                 if len(parts) == 4 and method == "POST":
+                    if parts[3] == "fetch-result":
+                        return self.send_json(recover_gcp_result(jid))
                     return self.send_json(change_status(jid, parts[3]))
             self.send_json({"error": "Not found."}, 404)
         except LookupError as exc:
