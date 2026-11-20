@@ -108,14 +108,14 @@ function openModal(html) {
 function closeModal() {$("modal").hidden=true;$("modal").innerHTML="";editor=null;}
 function openEditor(job=null) {
  editor=job;
- openModal('<h2>'+(job?"Edit job":"Create job")+'</h2><form id="job-form"><label class="field" for="title">Title</label><input class="input" id="title" maxlength="160" required placeholder="e.g. Generate 1080p scene"><label class="field" for="provider">Execution provider</label><select class="input" id="provider"><option value="local-demo">Local demo (safe test)</option><option value="gcp-cloud-run">Google Cloud Run Job</option><option value="webhook">External HTTPS webhook</option></select><label class="field" for="template">Job template</label><select class="input" id="template"><option value="echo">Echo test</option><option value="image">Generate image · SDXL open model · NVIDIA L4</option></select><label class="field" for="payload">Payload (JSON object)</label><textarea class="input" id="payload" spellcheck="false"></textarea><label class="check"><input type="checkbox" id="enqueue"> Queue immediately after saving</label><div id="form-error" style="color:#ffabab;margin-top:12px"></div><div class="dialog-footer"><button type="button" class="btn" id="close">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>');
+ openModal('<h2>'+(job?"Edit job":"Create job")+'</h2><form id="job-form"><label class="field" for="title">Title</label><input class="input" id="title" maxlength="160" required placeholder="e.g. Generate 1080p scene"><label class="field" for="provider">Execution provider</label><select class="input" id="provider"><option value="local-demo">Local demo (safe test)</option><option value="gcp-cloud-run">Google Cloud Run Job</option><option value="runpod-secure">RunPod — Secure Cloud</option><option value="runpod-community">RunPod — Community Cloud</option><option value="webhook">External HTTPS webhook</option></select><label class="field" for="template">Job template</label><select class="input" id="template"><option value="echo">Echo test</option><option value="image">Generate image · SDXL open model · NVIDIA L4</option></select><label class="field" for="payload">Payload (JSON object)</label><textarea class="input" id="payload" spellcheck="false"></textarea><label class="check"><input type="checkbox" id="enqueue"> Queue immediately after saving</label><div id="form-error" style="color:#ffabab;margin-top:12px"></div><div class="dialog-footer"><button type="button" class="btn" id="close">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>');
  $("title").value=job?.title||"";
  $("provider").value=job?.provider||"local-demo";
  $("payload").value=JSON.stringify(job?.payload||{"task":"echo","text":"Hello from AI Lab"},null,2);
  $("template").value=job?.payload?.task==="image"?"image":"echo";
  $("template").onchange=()=>{
    if($("template").value==="image"){
-     $("provider").value="gcp-cloud-run";
+     if(!["runpod-secure","runpod-community"].includes($("provider").value))$("provider").value="runpod-secure";
      $("payload").value=JSON.stringify({task:"image",prompt:"A cinematic photograph of a futuristic research laboratory at night, warm dramatic lighting, intricate details",width:1024,height:1024,steps:25,seed:42},null,2);
    }else{
      $("payload").value=JSON.stringify({task:"echo",text:"Hello from AI Lab"},null,2);
@@ -125,6 +125,10 @@ function openEditor(job=null) {
    if(job)return;
    if($("provider").value==="gcp-cloud-run")$("payload").value=JSON.stringify({"task":"echo","text":"Hello from GCP"},null,2);
    else if($("provider").value==="local-demo")$("payload").value=JSON.stringify({"prompt":"Test locally"},null,2);
+   else if($("provider").value.startsWith("runpod-")){
+     $("template").value="image";
+     $("payload").value=JSON.stringify({task:"image",prompt:"A cinematic photograph of a futuristic research laboratory at night",width:1024,height:1024,steps:25,seed:42},null,2);
+   }
  };
  $("enqueue").checked=false;
  $("close").onclick=closeModal;
@@ -206,7 +210,8 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("modal").hidden)cl
 refresh();
 api("/health").then(h=>{
  $("gcp-status").textContent=h.gcp_configured ? "GCP: "+h.gcp_project+" / "+h.gcp_region+" / "+h.gcp_job : "GCP: configure environment";
-}).catch(()=>{$("gcp-status").textContent="GCP: offline";});
+ $("gcp-status").textContent += h.runpod_configured ? " · RunPod ready" : " · RunPod not configured";
+}).catch(()=>{$("gcp-status").textContent="Cloud providers: offline";});
 setInterval(()=>{if($("modal").hidden)refresh();},3000);
 </script>
 </body>
