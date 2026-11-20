@@ -48,6 +48,33 @@ def validate_image(payload):
     if w % 64 or h % 64 or w * h > 1024 * 1024:
         raise ValueError("Dimensions must be multiples of 64, max 1 megapixel.")
 
+def available_gpus(cloud):
+    """Account-specific Pod availability, price and VRAM for exactly one cloud tier."""
+    if cloud not in ("SECURE", "COMMUNITY"):
+        raise ValueError("Invalid RunPod cloud tier")
+    key = os.getenv("RUNPOD_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Set RUNPOD_API_KEY before listing RunPod GPUs.")
+    url = "https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY&product=POD&count=1&cloud=" + cloud
+    listing = api_request("GET", url, token=key)
+    items = []
+    for gpu in listing.get("gpus", []):
+        if not isinstance(gpu, dict) or not gpu.get("id"):
+            continue
+        price = gpu.get("price") or {}
+        status = gpu.get("availability", "UNKNOWN")
+        cloud_key = cloud.lower()
+        items.append({
+            "id": gpu["id"], "name": gpu.get("name", gpu["id"]),
+            "memory": gpu.get("memory"),
+            "price": price.get(cloud_key),
+            "availability": status,
+            "cloud": cloud,
+            "available": bool(gpu.get(cloud_key, False)) and status not in ("NONE", "UNAVAILABLE", "UNKNOWN"),
+        })
+    items.sort(key=lambda gpu: (not gpu["available"], -(gpu["memory"] or 0), gpu["price"] if isinstance(gpu["price"], (int,float)) else 99999))
+    return items
+
 def credentials():
     key = os.getenv("RUNPOD_API_KEY", "").strip()
     image = os.getenv("RUNPOD_IMAGE", "").strip()
@@ -85,7 +112,9 @@ def run(job):
     validate_image(job["payload"])
     key, image = credentials()
     cloud = "COMMUNITY" if job["provider"] == "runpod-community" else "SECURE"
-    gpu_id = os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+    gpu_id = job["payload"].get("gpu_id") or os.getenv("RUNPOD_GPU_ID", "NVIDIA GeForce RTX 4090")
+    if not isinstance(gpu_id, str) or len(gpu_id) > 120:
+        raise ValueError("Invalid RunPod GPU selection.")
     token = secrets.token_urlsafe(32)
     job_json = json.dumps({"job_id": job["id"], "payload": job["payload"]}, separators=(",", ":"))
     request = {
@@ -97,7 +126,14 @@ def run(job):
         "ports": ["8000/http"],
         "env": {"AI_LAB_JOB_JSON": job_json, "AI_LAB_JOB_TOKEN": token}
     }
-    created = api_request("POST", API, data=request, token=key)
+    try:
+        created = api_request("POST", API, data=request, token=key)
+    except RuntimeError as exc:
+        if "no longer any instances available" in str(exc).lower():
+            raise RuntimeError("Selected {} GPU ({}) has no available Pod capacity right now. "
+                "Open the job editor, refresh RunPod GPUs, and select another GPU with available stock. "
+                "No Pod was created.".format(cloud.title(), gpu_id)) from exc
+        raise
     pod_id = created.get("id")
     if not pod_id or not re.fullmatch(r"[A-Za-z0-9_-]{3,80}", pod_id):
         raise RuntimeError("Pod creation returned no valid ID; check RunPod console before retry.")
