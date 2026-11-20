@@ -1,5 +1,5 @@
 FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HF_HOME=/tmp/huggingface
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app HF_HOME=/tmp/huggingface
 WORKDIR /app
 RUN pip install --no-cache-dir "diffusers>=0.32,<1" "transformers>=4.48,<5" \
     "accelerate>=1.3,<2" "safetensors>=0.5,<1" 
