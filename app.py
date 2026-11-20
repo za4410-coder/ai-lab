@@ -465,6 +465,14 @@ class Handler(BaseHTTPRequestHandler):
                 import runpod_backend
                 tier = parse_qs(urlsplit(self.path).query).get("cloud", ["SECURE"])[0]
                 return self.send_json({"cloud": tier, "gpus": runpod_backend.available_gpus(tier)})
+            if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "runpod-live" and method == "GET":
+                job = get_job(parts[2])
+                if not job:
+                    raise LookupError("Job not found.")
+                if job["provider"] not in ("runpod-community", "runpod-secure"):
+                    raise ValueError("Only RunPod jobs provide RunPod telemetry.")
+                import runpod_backend
+                return self.send_json(runpod_backend.live_details(job))
             if len(parts) == 4 and parts[:2] == ["api", "jobs"] and parts[3] == "image" and method == "GET":
                 binary = read_image(parts[2])
                 self.send_response(200)
