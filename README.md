@@ -22,6 +22,15 @@ You can customize the port and database directory:
 AI_LAB_PORT=9000 AI_LAB_DATA_DIR="$HOME/.ai-lab" python3 app.py
 ~~~
 
+
+## Read human-readable GCP results in the dashboard (v0.3)
+
+The dashboard now renders a **Worker output** card from actual remote result JSON, including task and elapsed duration. When a Cloud Run Job completes, the controller first tries the optional GCS result bucket and then queries **Cloud Logging** for the worker's `AI_LAB_RESULT` marker. No Cloud Storage bucket is required for simple `echo` / `sha256` / `sleep` test results.
+
+**For an existing completed job:** open its **Details** dialog and click **Fetch worker result**. This retrieves the already-executed result and stores it locally in SQLite; it does not run or charge for another Cloud Run execution. If Cloud Logging has not ingested the log yet, wait briefly and try the same button again. Cloud Logging read permissions (such as `roles/logging.viewer`) may be required for your signed-in Google account. The lookup matches the parsed `job_id` exactly, so output from different jobs isn't mixed together.
+
+Raw Cloud Run operation metadata remains visible under **Technical result** for diagnostics. Jobs using a custom container must print `AI_LAB_RESULT ` followed by a JSON object including the matching `job_id` to use this feature. Cloud Logging retention policies apply; if the logs have expired and no bucket was configured, the old output cannot be recovered automatically.
+
 ## GCP Cloud Run worker — end-to-end setup (v0.2)
 
 This repository now contains a **real, deployable Cloud Run Job container** in `gcp_worker/`. It runs safe CPU-only validation tasks, not GPU video inference. Deployment is opt-in; nothing has been deployed into your GCP account.
