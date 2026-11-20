@@ -23,6 +23,51 @@ AI_LAB_PORT=9000 AI_LAB_DATA_DIR="$HOME/.ai-lab" python3 app.py
 ~~~
 
 
+## RunPod Secure and Community Cloud (v0.5)
+
+Select **RunPod — Secure Cloud** or **RunPod — Community Cloud** from the dashboard New Job provider dropdown. A queued image job provisions a paid GPU Pod via RunPod REST v2, runs the open-weight SDXL model, retrieves a PNG over an authenticated HTTPS endpoint, and attempts to terminate the Pod. The image is saved locally in data/artifacts/JOB_ID.png.
+
+### Configure RunPod
+
+1. Sign up at https://www.runpod.io, add funds, and create an API key. Keep the key on your Mac.
+2. Build and publish the worker image to your **own public Docker Hub repository** (Docker Desktop and buildx required):
+
+~~~bash
+cd ailab
+git pull origin main
+docker login
+docker buildx build --platform linux/amd64 -f runpod_worker/Dockerfile -t YOUR_DOCKERHUB_USERNAME/ai-lab-sdxl:0.5 --push .
+~~~
+
+3. Launch the dashboard with your own API key and image reference:
+
+~~~bash
+export RUNPOD_API_KEY="YOUR_RUNPOD_API_KEY"
+export RUNPOD_IMAGE="YOUR_DOCKERHUB_USERNAME/ai-lab-sdxl:0.5"
+export RUNPOD_GPU_ID="NVIDIA GeForce RTX 4090"
+export RUNPOD_MAX_SECONDS=1800
+python3 app.py
+~~~
+
+Choose New Job, select RunPod Secure or Community, use the Generate image template and check Queue immediately.
+
+Example JSON payload:
+
+~~~json
+{"task":"image","prompt":"A cinematic laboratory at night","width":1024,"height":1024,"steps":25,"seed":42}
+~~~
+
+The worker is built from runpod_worker/Dockerfile and reuses the SDXL inference module. No GCP quota, Cloud Storage bucket or hosted generative AI model API is required. RunPod GPU model availability can differ between Secure and Community; adjust RUNPOD_GPU_ID according to the RunPod catalog.
+
+### Billing and privacy
+
+**RunPod Pods incur charges while provisioned.** The controller attempts termination after success, failure, or timeout (30 minutes by default, configurable up to 60). It saves the created pod ID in SQLite and tries to terminate abandoned Pods when restarting. **This is not guaranteed cleanup**: Mac shutdown, loss of connectivity, or API failures can leave billable Pods running. Check https://www.runpod.io/console/pods after initial tests; manually terminate abandoned Pods immediately. We do not yet have a remote watchdog or dollar cap.
+
+A temporary HTTPS proxy endpoint exposes port 8000 on RunPod, but its status and image routes require a random per-job Bearer token. The Mac saves the PNG locally with restricted permissions before deleting the Pod. Job prompts and the temporary token are supplied in Pod environment variables; provider and physical-host administrators may be able to inspect data, and Community hosts introduce additional parties. Use Secure Cloud for more sensitive workloads and avoid sharing raw sensitive footage with marketplace hosts.
+
+First Pod provisioning plus model weight downloads can take several minutes. If Docker Hub denies image pulls, ensure your worker image is publicly pullable and built for Linux AMD64. GPU types and pricing are not guaranteed; review the RunPod console before submitting paid workloads.
+
+
 ## Open-model GPU image generation (v0.4)
 
 The image flow **does not call Gemini, Imagen, OpenAI image APIs, or any other hosted model inference API**. An independent Cloud Run GPU worker downloads the open-weight **Stable Diffusion XL 1.0** model from Hugging Face and runs Diffusers/PyTorch on an NVIDIA L4 GPU. SDXL has an OpenRAIL++ model license; review its usage terms before commercial deployment. The GPU worker source is in `gcp_image_worker/`.
