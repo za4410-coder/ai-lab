@@ -25,7 +25,7 @@ class RunPodTests(unittest.TestCase):
                 return {"job_id": "job123", "state": "completed", "duration_seconds": 2}
             if url.endswith("/image"):
                 return png
-            return {"desiredStatus": "RUNNING"}
+            return {"desiredStatus": "RUNNING", "runtime": None}
         import tempfile
         for provider, tier in [("runpod-community", "COMMUNITY"), ("runpod-secure", "SECURE")]:
             calls.clear()
