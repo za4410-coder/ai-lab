@@ -23,6 +23,60 @@ AI_LAB_PORT=9000 AI_LAB_DATA_DIR="$HOME/.ai-lab" python3 app.py
 ~~~
 
 
+## Open-model GPU image generation (v0.4)
+
+The image flow **does not call Gemini, Imagen, OpenAI image APIs, or any other hosted model inference API**. An independent Cloud Run GPU worker downloads the open-weight **Stable Diffusion XL 1.0** model from Hugging Face and runs Diffusers/PyTorch on an NVIDIA L4 GPU. SDXL has an OpenRAIL++ model license; review its usage terms before commercial deployment. The GPU worker source is in `gcp_image_worker/`.
+
+### One-time deployment
+
+Use your existing GCP project and active gcloud login. You must configure a **private results bucket**, because PNG images should not be embedded into Cloud Logging. The deployment helper can create the bucket if it doesn't exist.
+
+~~~bash
+cd ailab
+git pull origin main
+export GCP_PROJECT=ai-lab-515319
+export GCP_REGION=us-central1
+export GCP_JOB=ai-lab-worker
+export GCP_IMAGE_JOB=ai-lab-image-worker
+export AI_LAB_RESULTS_BUCKET=ai-lab-515319-results
+chmod +x deploy_gcp_image.sh
+./deploy_gcp_image.sh
+~~~
+
+The helper explicitly asks for confirmation. It creates a dedicated GPU service account with **objectCreator** access to the results bucket, builds an image in Artifact Registry and deploys a **different** Cloud Run Job with **one NVIDIA L4 24 GB**, 4 vCPU, 16 GiB RAM, one task, no retries and a 30-minute task timeout. **Deployment itself does not execute GPU inference**, but building/storing the container and output files can have charges. If your project lacks GPU quota or your account lacks access to the worker service account, GCP will give a precise deployment error.
+
+Ensure your local `gcloud` account has permission to read objects in the results bucket, such as `roles/storage.objectViewer`; your project owner account often has the needed permissions already. The execution identity needs to download public Hugging Face model files and may require outbound network access. Model weights are downloaded on each cold start, adding latency and potential external network usage; future versions can cache the model in a separate private asset store.
+
+### Start and run
+
+Run the controller from the same shell with all variables still exported. If you use `SSL_CERT_FILE` for your Python HTTPS certificates, set it first.
+
+~~~bash
+python3 app.py
+~~~
+
+Visit http://127.0.0.1:8765 and choose **New Job → Generate image · SDXL open model · NVIDIA L4**. The template sets GCP as provider with this input:
+
+~~~json
+{
+  "task": "image",
+  "prompt": "A cinematic photograph of a futuristic research laboratory at night, warm dramatic lighting, intricate details",
+  "width": 1024,
+  "height": 1024,
+  "steps": 25,
+  "seed": 42
+}
+~~~
+
+Check **Queue immediately after saving** and save. The local dispatcher routes image tasks to `GCP_IMAGE_JOB` and echo tasks to your existing inexpensive CPU `GCP_JOB`.
+
+The GPU worker uploads a PNG at `gs://BUCKET/ai-lab/jobs/JOB_ID/image.png` plus `result.json` to the same private bucket. The controller loads result JSON, renders a preview using the local `/api/jobs/JOB_ID/image` endpoint, and offers an **Open full-size image** link. No public bucket permissions or signed URLs are needed. For completed image jobs with missing result JSON, open **Details → Fetch worker result** to retrieve the matching Cloud Logging metadata.
+
+**Costs and limits:** Cloud Run GPU executions incur GPU, CPU and memory charges; model download/build time may be significant. The job is capped at 30 minutes but has **no per-job dollar hard limit**. A Cloud Run spend cap configured earlier applies subject to your Cloud Billing cap eligibility and scope; always check the configured rules. Image requests are restricted to one PNG, dimensions up to 1024 × 1024, 50 inference steps, no automatic retries, and one execution at a time from the local queue.
+
+**Privacy:** Model inference uses GCP hardware but not Google's managed generative AI inference services. Prompts and images still transit and reside in GCP; Hugging Face supplies publicly available model weights. Access to results is controlled via Cloud Storage IAM. Cloud Run's arguments and Cloud Logging may contain your prompts, so don't use confidential personal images or secrets in the initial test.
+
+
 ## Read human-readable GCP results in the dashboard (v0.3)
 
 The dashboard now renders a **Worker output** card from actual remote result JSON, including task and elapsed duration. When a Cloud Run Job completes, the controller first tries the optional GCS result bucket and then queries **Cloud Logging** for the worker's `AI_LAB_RESULT` marker. No Cloud Storage bucket is required for simple `echo` / `sha256` / `sleep` test results.
