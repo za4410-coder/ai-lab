@@ -117,6 +117,7 @@ function openEditor(job=null) {
    if($("template").value==="image"){
      if(!["runpod-secure","runpod-community"].includes($("provider").value))$("provider").value="runpod-secure";
      $("payload").value=JSON.stringify({task:"image",prompt:"A cinematic photograph of a futuristic research laboratory at night, warm dramatic lighting, intricate details",width:1024,height:1024,steps:25,seed:42},null,2);
+     $("provider").dispatchEvent(new Event("change"));
    }else{
      $("payload").value=JSON.stringify({task:"echo",text:"Hello from AI Lab"},null,2);
    }
