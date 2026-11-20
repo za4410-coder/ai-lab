@@ -28,7 +28,7 @@ strong{font-weight:650}.muted{color:#899bb4}.mono{font-family:ui-monospace,SFMon
 textarea{resize:vertical;min-height:140px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.dialog-footer{display:flex;justify-content:flex-end;gap:9px;margin-top:24px}
 .check{display:flex;gap:9px;align-items:center;margin-top:17px;color:#b9c8db}.check input{accent-color:#538afa}.detail-list{display:grid;grid-template-columns:120px 1fr;gap:12px;margin:14px 0}.detail-list dt{color:#8da0ba}.detail-list dd{margin:0;overflow-wrap:anywhere}
 pre{background:#090f18;border:1px solid #28364d;border-radius:10px;padding:13px;overflow:auto;max-height:260px;font-size:12px;white-space:pre-wrap;word-break:break-word}
-.result-card{background:#112d28;border:1px solid #2b6c58;border-radius:12px;padding:18px;margin-top:16px;color:#d7f9e9}.result-card h3{font-size:13px;margin:0 0 10px;color:#84e3b8}.result-value{font-size:18px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.result-meta{font-size:12px;color:#a5d1bd;margin-top:8px}.result-pending{font-size:12px;color:#a4b6ce;margin-top:14px}.event{padding:9px 0;border-bottom:1px solid #263347;font-size:12px;color:#bdcce0}.event time{color:#8395af;margin-right:12px}
+.image-preview{display:block;width:100%;max-height:460px;object-fit:contain;border-radius:9px;margin:14px 0;background:#070d14}.result-card{background:#112d28;border:1px solid #2b6c58;border-radius:12px;padding:18px;margin-top:16px;color:#d7f9e9}.result-card h3{font-size:13px;margin:0 0 10px;color:#84e3b8}.result-value{font-size:18px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}.result-meta{font-size:12px;color:#a5d1bd;margin-top:8px}.result-pending{font-size:12px;color:#a4b6ce;margin-top:14px}.event{padding:9px 0;border-bottom:1px solid #263347;font-size:12px;color:#bdcce0}.event time{color:#8395af;margin-right:12px}
 @media(max-width:950px){.shell{display:block}.sidebar{padding:14px 20px;display:flex;align-items:center;gap:25px}.brand{padding:0;font-size:20px}.brand small,.sidebar-note{display:none}.nav{padding:8px 12px}main{padding:25px 16px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.tablewrap{overflow:auto}table{min-width:820px}}
 @media(max-width:520px){header{align-items:flex-start}header h1{font-size:24px}.stats{gap:9px}.stat{padding:14px}.stat .num{font-size:25px}.panel-head{align-items:stretch}.controls{width:100%}.controls .input{width:50%}}
 </style>
@@ -108,10 +108,19 @@ function openModal(html) {
 function closeModal() {$("modal").hidden=true;$("modal").innerHTML="";editor=null;}
 function openEditor(job=null) {
  editor=job;
- openModal('<h2>'+(job?"Edit job":"Create job")+'</h2><form id="job-form"><label class="field" for="title">Title</label><input class="input" id="title" maxlength="160" required placeholder="e.g. Generate 1080p scene"><label class="field" for="provider">Execution provider</label><select class="input" id="provider"><option value="local-demo">Local demo (safe test)</option><option value="gcp-cloud-run">Google Cloud Run Job</option><option value="webhook">External HTTPS webhook</option></select><label class="field" for="payload">Payload (JSON object)</label><textarea class="input" id="payload" spellcheck="false"></textarea><label class="check"><input type="checkbox" id="enqueue"> Queue immediately after saving</label><div id="form-error" style="color:#ffabab;margin-top:12px"></div><div class="dialog-footer"><button type="button" class="btn" id="close">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>');
+ openModal('<h2>'+(job?"Edit job":"Create job")+'</h2><form id="job-form"><label class="field" for="title">Title</label><input class="input" id="title" maxlength="160" required placeholder="e.g. Generate 1080p scene"><label class="field" for="provider">Execution provider</label><select class="input" id="provider"><option value="local-demo">Local demo (safe test)</option><option value="gcp-cloud-run">Google Cloud Run Job</option><option value="webhook">External HTTPS webhook</option></select><label class="field" for="template">Job template</label><select class="input" id="template"><option value="echo">Echo test</option><option value="image">Generate image · SDXL open model · NVIDIA L4</option></select><label class="field" for="payload">Payload (JSON object)</label><textarea class="input" id="payload" spellcheck="false"></textarea><label class="check"><input type="checkbox" id="enqueue"> Queue immediately after saving</label><div id="form-error" style="color:#ffabab;margin-top:12px"></div><div class="dialog-footer"><button type="button" class="btn" id="close">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>');
  $("title").value=job?.title||"";
  $("provider").value=job?.provider||"local-demo";
  $("payload").value=JSON.stringify(job?.payload||{"task":"echo","text":"Hello from AI Lab"},null,2);
+ $("template").value=job?.payload?.task==="image"?"image":"echo";
+ $("template").onchange=()=>{
+   if($("template").value==="image"){
+     $("provider").value="gcp-cloud-run";
+     $("payload").value=JSON.stringify({task:"image",prompt:"A cinematic photograph of a futuristic research laboratory at night, warm dramatic lighting, intricate details",width:1024,height:1024,steps:25,seed:42},null,2);
+   }else{
+     $("payload").value=JSON.stringify({task:"echo",text:"Hello from AI Lab"},null,2);
+   }
+ };
  $("provider").onchange=()=>{
    if(job)return;
    if($("provider").value==="gcp-cloud-run")$("payload").value=JSON.stringify({"task":"echo","text":"Hello from GCP"},null,2);
@@ -138,8 +147,9 @@ function humanResult(j) {
  if (artifact && typeof artifact==="object") {
    const output=artifact.output||{};
    const primary=output.echo ?? output.sha256 ?? (output.slept_seconds!==undefined ? "Slept "+output.slept_seconds+" seconds" : null);
-   const readable=primary!==null ? String(primary) : JSON.stringify(output,null,2);
-   return '<section class="result-card"><h3>✓ Worker output</h3><div class="result-value">'+esc(readable)+'</div><div class="result-meta">Task: '+esc(artifact.task||"unknown")+(artifact.duration_seconds!==undefined?' · Duration: '+esc(artifact.duration_seconds)+' seconds':'')+'</div></section>';
+   const readable=primary!==null ? String(primary) : (output.image_uri?"Image generated with "+(output.model||"open model"):JSON.stringify(output,null,2));
+   const img=artifact.task==="image" && output.image_uri ? '<img class="image-preview" alt="Generated image for '+esc(j.title)+'" src="/api/jobs/'+encodeURIComponent(j.id)+'/image"><a class="btn small" href="/api/jobs/'+encodeURIComponent(j.id)+'/image" target="_blank" rel="noopener">Open full-size image</a>' : '';
+   return '<section class="result-card"><h3>✓ Worker output</h3><div class="result-value">'+esc(readable)+'</div>'+img+'<div class="result-meta">Task: '+esc(artifact.task||"unknown")+(artifact.duration_seconds!==undefined?' · Duration: '+esc(artifact.duration_seconds)+' seconds':'')+'</div></section>';
  }
  if(j.provider==="local-demo" && result.message){
    return '<section class="result-card"><h3>✓ Local output</h3><div class="result-value">'+esc(result.message)+'</div></section>';
