@@ -411,7 +411,7 @@ def read_image(job_id):
     uri = image_object_path(job)
     raw = subprocess.run(["gcloud", "storage", "cat", uri],
                          capture_output=True, timeout=90, check=True)
-    if len(raw.stdout) > 20 * 1024 * 1024 or not raw.stdout.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+    if len(raw.stdout) > 20 * 1024 * 1024 or not raw.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
         raise RuntimeError("Result is not a valid PNG image under 20 MB.")
     return raw.stdout
 
