@@ -132,18 +132,37 @@ function openEditor(job=null) {
    }
  };
  const isRunpod=()=>["runpod-secure","runpod-community"].includes($("provider").value);
- async function loadGpus(){
-   $("gpu-picker").hidden=!isRunpod();
-   if(!isRunpod())return;
-   const prev=job?.payload?.gpu_id||$("gpu-choice").value||"";
-   $("gpu-choice").innerHTML='<option value="">Checking live RunPod availability…</option>';
-   $("gpu-info").textContent="Availability can change before provisioning.";
-   try{
-     const tier=$("provider").value==="runpod-community"?"COMMUNITY":"SECURE";
-     const data=await api("/runpod/gpus?cloud="+tier);
-     const list=data.gpus.filter(g=>g.available&&Number(g.memory)>=16);
-     $("gpu-choice").innerHTML='<option value="">Select an available GPU…</option>'+list.map(g=>
-       '<option value="'+esc(g.id)+'">'+esc(g.name)+' · '+esc(g.memory)+' GB · '+esc(g.availability)+(typeof g.price==="number"?' · 
+ async function loadGpus() {
+   $("gpu-picker").hidden = !isRunpod();
+   if (!isRunpod()) return;
+   const picker = $("gpu-choice");
+   const previous = job?.payload?.gpu_id || picker.value || "";
+   picker.innerHTML = '<option value="">Checking live RunPod availability…</option>';
+   $("gpu-info").textContent = "Availability may change before a Pod is created.";
+   try {
+     const tier = $("provider").value === "runpod-community" ? "COMMUNITY" : "SECURE";
+     const data = await api("/runpod/gpus?cloud=" + tier);
+     if ($("modal").hidden || !document.getElementById("gpu-choice")) return;
+     const options = (data.gpus || []).filter(g => g.available && Number(g.memory) >= 16);
+     picker.innerHTML = '<option value="">Select an available GPU…</option>' + options.map(g => {
+       const hourly = typeof g.price === "number" ? " · $" + g.price.toFixed(2) + "/hour" : "";
+       return '<option value="' + esc(g.id) + '">' + esc(g.name) + " · " + esc(g.memory) + " GB · " + esc(g.availability) + esc(hourly) + "</option>";
+     }).join("");
+     if (previous && options.some(g => g.id === previous)) picker.value = previous;
+     else if (options.length === 1) picker.value = options[0].id;
+     $("gpu-info").textContent = options.length
+       ? options.length + " GPU models available in " + tier + ". Availability can change before launch."
+       : "No compatible GPU models currently available in " + tier + ". Try the other cloud tier.";
+   } catch (err) {
+     picker.innerHTML = '<option value="">GPU lookup failed</option>';
+     $("gpu-info").textContent = err.message;
+   }
+ }
+ const previousProviderChange = $("provider").onchange;
+ $("provider").onchange = () => { previousProviderChange(); loadGpus(); };
+ $("gpu-refresh").onclick = loadGpus;
+ loadGpus();
+ $("enqueue").checked = false;
  $("close").onclick=closeModal;
  $("job-form").onsubmit=async e=>{
   e.preventDefault();
