@@ -206,7 +206,9 @@ async function showDetails(id) {
  const events=(j.events||[]).map(ev=>'<div class="event"><time>'+esc(prettyDate(ev.created_at))+'</time>'+esc(ev.message)+'</div>').join("");
  const canFetch=j.provider==="gcp-cloud-run" && j.status==="completed" && !j.result?.artifact;
  const fetchBtn=canFetch?'<button class="btn primary" type="button" id="fetch-result">Fetch worker result</button>':"";
- openModal('<h2>'+esc(j.title)+'</h2><dl class="detail-list">'+details+'</dl>'+humanResult(j)+'<div id="fetch-error" style="color:#ffb4b4;margin:10px 0"></div><label class="field">Payload</label><pre>'+esc(JSON.stringify(j.payload,null,2))+'</pre>'+(j.error?'<label class="field">Error</label><pre>'+esc(j.error)+'</pre>':'')+(j.result?'<label class="field">Technical result</label><pre>'+esc(JSON.stringify(j.result,null,2))+'</pre>':'')+'<label class="field">Activity log</label>'+(events||'<p>No events</p>')+'<div class="dialog-footer">'+fetchBtn+'<button class="btn" id="close">Close</button></div>');
+ const runpodPanel=j.provider.startsWith("runpod-") ? '<section class="result-card" id="runpod-live-panel" data-job-id="'+esc(j.id)+'"><h3>RunPod live monitor</h3><div class="muted" id="runpod-live-body">Loading live status…</div><div id="runpod-log-section"></div></section>' : "";
+ openModal('<h2>'+esc(j.title)+'</h2><dl class="detail-list">'+details+'</dl>'+runpodPanel+humanResult(j)+'<div id="fetch-error" style="color:#ffb4b4;margin:10px 0"></div><label class="field">Payload</label><pre>'+esc(JSON.stringify(j.payload,null,2))+'</pre>'+(j.error?'<label class="field">Error</label><pre>'+esc(j.error)+'</pre>':'')+(j.result?'<label class="field">Technical result</label><pre>'+esc(JSON.stringify(j.result,null,2))+'</pre>':'')+'<label class="field">Activity log</label>'+(events||'<p>No events</p>')+'<div class="dialog-footer">'+fetchBtn+'<button class="btn" id="close">Close</button></div>');
+ if (j.provider.startsWith("runpod-")) refreshRunpodLive(j.id);
  $("close").onclick=closeModal;
  if(canFetch) $("fetch-result").onclick=async()=>{
    const button=$("fetch-result");
@@ -223,6 +225,52 @@ async function showDetails(id) {
    }
  };
 }
+
+async function refreshRunpodLive(id) {
+ const panel=$("runpod-live-panel");
+ if(!panel||panel.dataset.jobId!==id)return;
+ if(panel.dataset.loading==="1")return;
+ panel.dataset.loading="1";
+ try {
+   const data=await api("/jobs/"+encodeURIComponent(id)+"/runpod-live");
+   if(!document.getElementById("runpod-live-panel") || $("runpod-live-panel").dataset.jobId!==id)return;
+   const value=(v,suffix="")=>v===null||v===undefined||v===""?"—":esc(v)+suffix;
+   const elapsed=data.elapsed_seconds===null||data.elapsed_seconds===undefined?"—":Math.floor(data.elapsed_seconds/60)+"m "+data.elapsed_seconds%60+"s";
+   const rate=typeof data.hourly_rate==="number"?"$"+data.hourly_rate.toFixed(3)+"/hour":"—";
+   const cost=typeof data.estimated_compute_cost==="number"?"~$"+data.estimated_compute_cost.toFixed(3):"—";
+   const gpuStats=(data.gpu_metrics||[]).map((m,i)=>"GPU "+(i+1)+": "+value(m.utilization,"%")+" utilization · "+value(m.memory_utilization,"%")+" memory"+(m.temperature===null||m.temperature===undefined?"":" · "+value(m.temperature,"°C"))).join(" | ");
+   const latest=(data.logs||[]).join("\n").toLowerCase();
+   const stage=data.terminated?"Terminated":
+     latest.includes("generating")?"Image generation":
+     latest.includes("loading_model")||latest.includes("loading pipeline")?"Model loading":
+     data.runtime_seconds||String(data.status).toUpperCase()==="RUNNING"?"Worker starting / running":"Provisioning";
+   const rows=[
+     ["Stage",stage],["Pod status",data.status],["Pod ID",data.pod_id],
+     ["GPU",data.gpu],["Cloud",data.cloud],["Datacenter",data.region],
+     ["Elapsed",elapsed],["Runtime",data.runtime_seconds===null||data.runtime_seconds===undefined?"—":data.runtime_seconds+"s"],
+     ["Reported compute rate",rate],["Estimated compute",cost],
+     ["GPU telemetry",gpuStats||"Not reported"],["CPU utilization",value(data.cpu_utilization,"%")],
+     ["Memory utilization",value(data.memory_utilization,"%")],
+     ["Pod cleanup",data.terminated?"Terminated":data.active?"Active · auto-delete pending":"Not provisioned"]
+   ];
+   $("runpod-live-body").innerHTML='<dl class="detail-list">'+rows.map(([k,v])=>'<dt>'+esc(k)+'</dt><dd>'+esc(v??"—")+'</dd>').join("")+'</dl>'+
+     (data.error?'<div class="result-pending">'+esc(data.error)+'</div>':'')+
+     '<p class="muted" style="font-size:12px">Cost is an estimate from the reported GPU rate and elapsed time, excluding storage, network and other charges.</p>'+
+     (data.active?'<a href="https://www.runpod.io/console/pods" target="_blank" rel="noopener">Open RunPod Pods console</a>':'');
+   $("runpod-log-section").innerHTML='<label class="field">Recent RunPod container logs</label>'+
+     (data.logs?.length?'<pre style="max-height:240px;overflow:auto;white-space:pre-wrap">'+esc(data.logs.join("\n"))+'</pre>':
+       '<p class="muted">'+esc(data.logs_error||"No container log lines available yet.")+'</p>');
+ } catch(err) {
+   if(document.getElementById("runpod-live-body"))$("runpod-live-body").textContent="Live telemetry unavailable: "+err.message;
+ } finally {
+   if(document.getElementById("runpod-live-panel")&&$("runpod-live-panel").dataset.jobId===id)$("runpod-live-panel").dataset.loading="0";
+ }
+}
+setInterval(()=>{
+ const panel=$("runpod-live-panel");
+ if(panel && !($("modal").hidden)) refreshRunpodLive(panel.dataset.jobId);
+},6000);
+
 $("jobs").addEventListener("click",async e=>{
  const button=e.target.closest("button[data-action]");
  if(!button)return;
