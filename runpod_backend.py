@@ -150,8 +150,10 @@ def run(job):
             state = pod.get("desiredStatus", "")
             if state in ("EXITED", "TERMINATED"):
                 raise RuntimeError("Pod exited before image was downloaded.")
-            if pod.get("runtime", {}).get("error"):
-                raise RuntimeError("RunPod runtime error: " + str(pod["runtime"]["error"])[:300])
+            # RunPod returns "runtime": null while the Pod is starting.
+            runtime = pod.get("runtime") or {}
+            if runtime.get("error"):
+                raise RuntimeError("RunPod runtime error: " + str(runtime["error"])[:300])
             try:
                 status = api_request("GET", base + "/status", token=token, timeout=12)
             except (RuntimeError, urllib.error.URLError, TimeoutError, OSError):
