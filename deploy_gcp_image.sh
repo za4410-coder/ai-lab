@@ -24,8 +24,23 @@ gcloud storage buckets add-iam-policy-binding "gs://$AI_LAB_RESULTS_BUCKET" \
 if ! gcloud artifacts repositories describe "$REPOSITORY" --location="$GCP_REGION" --project="$GCP_PROJECT" >/dev/null 2>&1; then
  gcloud artifacts repositories create "$REPOSITORY" --repository-format=docker --location="$GCP_REGION" --project="$GCP_PROJECT"
 fi
-gcloud builds submit ./gcp_image_worker --tag="$IMAGE" --project="$GCP_PROJECT"
-gcloud run jobs deploy "$GCP_IMAGE_JOB" --image="$IMAGE" --project="$GCP_PROJECT" --region="$GCP_REGION" \
+if [[ "${AI_LAB_SKIP_BUILD:-0}" == "1" ]]; then
+  echo "Reusing existing image: $IMAGE"
+  gcloud artifacts docker images describe "$IMAGE" --project="$GCP_PROJECT" >/dev/null
+else
+  gcloud builds submit ./gcp_image_worker --tag="$IMAGE" --project="$GCP_PROJECT"
+fi
+if gcloud run jobs deploy --help 2>/dev/null | grep -q -- '--gpu-type'; then
+  RUN_CMD=(gcloud run jobs deploy)
+else
+  echo "Using beta Cloud Run Jobs deployment (GPU flags unavailable in stable CLI)."
+  RUN_CMD=(gcloud beta run jobs deploy)
+  if ! gcloud beta run jobs deploy --help 2>/dev/null | grep -q -- '--gpu-type'; then
+    echo "Your gcloud CLI lacks Cloud Run Jobs GPU flags. Upgrade the Google Cloud CLI and retry." >&2
+    exit 2
+  fi
+fi
+"${RUN_CMD[@]}" "$GCP_IMAGE_JOB" --image="$IMAGE" --project="$GCP_PROJECT" --region="$GCP_REGION" \
  --service-account="$GCP_GPU_SERVICE_ACCOUNT" \
  --gpu=1 --gpu-type=nvidia-l4 --no-gpu-zonal-redundancy \
  --cpu=4 --memory=16Gi --tasks=1 --parallelism=1 --max-retries=0 --task-timeout=30m \
