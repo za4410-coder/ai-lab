@@ -35,7 +35,7 @@ pre{background:#090f18;border:1px solid #28364d;border-radius:10px;padding:13px;
 </head>
 <body>
 <div class="shell">
-<aside class="sidebar"><div class="brand">◈ AI LAB<small>CONTROL CENTER</small></div><div class="nav">▦ &nbsp; Jobs</div><div class="sidebar-note">Local-first job management.<br>Cloud execution is opt-in.<br><br><span id="connection">● Connecting…</span></div></aside>
+<aside class="sidebar"><div class="brand">◈ AI LAB<small>CONTROL CENTER</small></div><div class="nav">▦ &nbsp; Jobs</div><div class="sidebar-note">Local-first job management.<br>Cloud execution is opt-in.<br><br><span id="connection">● Connecting…</span><br><span id="gcp-status">GCP: checking…</span></div></aside>
 <main>
 <header><div><h1>Job Dashboard</h1><p>Manage AI workloads across local and cloud providers.</p></div><button class="btn primary" id="new">+ New Job</button></header>
 <div id="alert" class="alert" role="alert"></div>
@@ -111,7 +111,12 @@ function openEditor(job=null) {
  openModal('<h2>'+(job?"Edit job":"Create job")+'</h2><form id="job-form"><label class="field" for="title">Title</label><input class="input" id="title" maxlength="160" required placeholder="e.g. Generate 1080p scene"><label class="field" for="provider">Execution provider</label><select class="input" id="provider"><option value="local-demo">Local demo (safe test)</option><option value="gcp-cloud-run">Google Cloud Run Job</option><option value="webhook">External HTTPS webhook</option></select><label class="field" for="payload">Payload (JSON object)</label><textarea class="input" id="payload" spellcheck="false"></textarea><label class="check"><input type="checkbox" id="enqueue"> Queue immediately after saving</label><div id="form-error" style="color:#ffabab;margin-top:12px"></div><div class="dialog-footer"><button type="button" class="btn" id="close">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>');
  $("title").value=job?.title||"";
  $("provider").value=job?.provider||"local-demo";
- $("payload").value=JSON.stringify(job?.payload||{"prompt":"A cinematic landscape","resolution":"1080p"},null,2);
+ $("payload").value=JSON.stringify(job?.payload||{"task":"echo","text":"Hello from AI Lab"},null,2);
+ $("provider").onchange=()=>{
+   if(job)return;
+   if($("provider").value==="gcp-cloud-run")$("payload").value=JSON.stringify({"task":"echo","text":"Hello from GCP"},null,2);
+   else if($("provider").value==="local-demo")$("payload").value=JSON.stringify({"prompt":"Test locally"},null,2);
+ };
  $("enqueue").checked=false;
  $("close").onclick=closeModal;
  $("job-form").onsubmit=async e=>{
@@ -155,6 +160,9 @@ $("search").oninput=render;
 $("filter").onchange=render;
 window.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("modal").hidden)closeModal();});
 refresh();
+api("/health").then(h=>{
+ $("gcp-status").textContent=h.gcp_configured ? "GCP: "+h.gcp_project+" / "+h.gcp_region+" / "+h.gcp_job : "GCP: configure environment";
+}).catch(()=>{$("gcp-status").textContent="GCP: offline";});
 setInterval(()=>{if($("modal").hidden)refresh();},3000);
 </script>
 </body>
