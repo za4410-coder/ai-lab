@@ -108,7 +108,7 @@ function openModal(html) {
 function closeModal() {$("modal").hidden=true;$("modal").innerHTML="";editor=null;}
 function openEditor(job=null) {
  editor=job;
- openModal('<h2>'+(job?"Edit job":"Create job")+'</h2><form id="job-form"><label class="field" for="title">Title</label><input class="input" id="title" maxlength="160" required placeholder="e.g. Generate 1080p scene"><label class="field" for="provider">Execution provider</label><select class="input" id="provider"><option value="local-demo">Local demo (safe test)</option><option value="gcp-cloud-run">Google Cloud Run Job</option><option value="runpod-secure">RunPod — Secure Cloud</option><option value="runpod-community">RunPod — Community Cloud</option><option value="webhook">External HTTPS webhook</option></select><label class="field" for="template">Job template</label><select class="input" id="template"><option value="echo">Echo test</option><option value="image">Generate image · SDXL open model · NVIDIA L4</option></select><label class="field" for="payload">Payload (JSON object)</label><textarea class="input" id="payload" spellcheck="false"></textarea><label class="check"><input type="checkbox" id="enqueue"> Queue immediately after saving</label><div id="form-error" style="color:#ffabab;margin-top:12px"></div><div class="dialog-footer"><button type="button" class="btn" id="close">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>');
+ openModal('<h2>'+(job?"Edit job":"Create job")+'</h2><form id="job-form"><label class="field" for="title">Title</label><input class="input" id="title" maxlength="160" required placeholder="e.g. Generate 1080p scene"><label class="field" for="provider">Execution provider</label><select class="input" id="provider"><option value="local-demo">Local demo (safe test)</option><option value="gcp-cloud-run">Google Cloud Run Job</option><option value="runpod-secure">RunPod — Secure Cloud</option><option value="runpod-community">RunPod — Community Cloud</option><option value="webhook">External HTTPS webhook</option></select><div id="gpu-picker" hidden><label class="field" for="gpu-choice">RunPod GPU (live tier availability)</label><select class="input" id="gpu-choice"></select><div class="muted" id="gpu-info" style="margin:6px 0 10px;font-size:12px"></div><button type="button" class="btn small" id="gpu-refresh">Refresh GPU availability</button></div><label class="field" for="template">Job template</label><select class="input" id="template"><option value="echo">Echo test</option><option value="image">Generate image · SDXL open model · NVIDIA L4</option></select><label class="field" for="payload">Payload (JSON object)</label><textarea class="input" id="payload" spellcheck="false"></textarea><label class="check"><input type="checkbox" id="enqueue"> Queue immediately after saving</label><div id="form-error" style="color:#ffabab;margin-top:12px"></div><div class="dialog-footer"><button type="button" class="btn" id="close">Cancel</button><button class="btn primary" type="submit">Save job</button></div></form>');
  $("title").value=job?.title||"";
  $("provider").value=job?.provider||"local-demo";
  $("payload").value=JSON.stringify(job?.payload||{"task":"echo","text":"Hello from AI Lab"},null,2);
@@ -130,6 +130,121 @@ function openEditor(job=null) {
      $("payload").value=JSON.stringify({task:"image",prompt:"A cinematic photograph of a futuristic research laboratory at night",width:1024,height:1024,steps:25,seed:42},null,2);
    }
  };
+ const isRunpod=()=>["runpod-secure","runpod-community"].includes($("provider").value);
+ async function loadGpus(){
+   $("gpu-picker").hidden=!isRunpod();
+   if(!isRunpod())return;
+   const prev=job?.payload?.gpu_id||$("gpu-choice").value||"";
+   $("gpu-choice").innerHTML='<option value="">Checking live RunPod availability…</option>';
+   $("gpu-info").textContent="Availability can change before provisioning.";
+   try{
+     const tier=$("provider").value==="runpod-community"?"COMMUNITY":"SECURE";
+     const data=await api("/runpod/gpus?cloud="+tier);
+     const list=data.gpus.filter(g=>g.available&&Number(g.memory)>=16);
+     $("gpu-choice").innerHTML='<option value="">Select an available GPU…</option>'+list.map(g=>
+       '<option value="'+esc(g.id)+'">'+esc(g.name)+' · '+esc(g.memory)+' GB · '+esc(g.availability)+(typeof g.price==="number"?' · 
+ $("close").onclick=closeModal;
+ $("job-form").onsubmit=async e=>{
+  e.preventDefault();
+  try{
+   const payload=JSON.parse($("payload").value);
+   if(!payload||Array.isArray(payload)||typeof payload!=="object")throw Error("Payload must be a JSON object.");
+   if(isRunpod()){
+     if(!$("gpu-choice").value)throw Error("Select a currently available RunPod GPU first.");
+     payload.gpu_id=$("gpu-choice").value;
+   }else{delete payload.gpu_id;}
+   const data={title:$("title").value,provider:$("provider").value,payload,enqueue:$("enqueue").checked};
+   await api(job?"/jobs/"+job.id:"/jobs",{method:job?"PATCH":"POST",body:JSON.stringify(data)});
+   closeModal();await refresh();
+  }catch(err){$("form-error").textContent=err.message;}
+ };
+ $("title").focus();
+}
+function humanResult(j) {
+ const result=j.result||{};
+ const artifact=result.artifact;
+ if (j.status!=="completed") return "";
+ if (artifact && typeof artifact==="object") {
+   const output=artifact.output||{};
+   const primary=output.echo ?? output.sha256 ?? (output.slept_seconds!==undefined ? "Slept "+output.slept_seconds+" seconds" : null);
+   const readable=primary!==null ? String(primary) : (output.image_uri?"Image generated with "+(output.model||"open model"):JSON.stringify(output,null,2));
+   const img=artifact.task==="image" && output.image_uri ? '<img class="image-preview" alt="Generated image for '+esc(j.title)+'" src="/api/jobs/'+encodeURIComponent(j.id)+'/image"><a class="btn small" href="/api/jobs/'+encodeURIComponent(j.id)+'/image" target="_blank" rel="noopener">Open full-size image</a>' : '';
+   return '<section class="result-card"><h3>✓ Worker output</h3><div class="result-value">'+esc(readable)+'</div>'+img+'<div class="result-meta">Task: '+esc(artifact.task||"unknown")+(artifact.duration_seconds!==undefined?' · Duration: '+esc(artifact.duration_seconds)+' seconds':'')+'</div></section>';
+ }
+ if(j.provider==="local-demo" && result.message){
+   return '<section class="result-card"><h3>✓ Local output</h3><div class="result-value">'+esc(result.message)+'</div></section>';
+ }
+ if(j.provider==="gcp-cloud-run"){
+   return '<div class="result-pending">Cloud execution finished. The worker output has not been retrieved yet. You can fetch it from Cloud Logging without rerunning the job.</div>';
+ }
+ return "";
+}
+async function showDetails(id) {
+ const j=await api("/jobs/"+id);
+ const dl=[["ID",j.id],["Provider",j.provider],["Status",j.status],["Created",prettyDate(j.created_at)],["Started",prettyDate(j.started_at)],["Finished",prettyDate(j.finished_at)],["Attempts",j.attempts]];
+ const details=dl.map(([k,v])=>'<dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd>').join("");
+ const events=(j.events||[]).map(ev=>'<div class="event"><time>'+esc(prettyDate(ev.created_at))+'</time>'+esc(ev.message)+'</div>').join("");
+ const canFetch=j.provider==="gcp-cloud-run" && j.status==="completed" && !j.result?.artifact;
+ const fetchBtn=canFetch?'<button class="btn primary" type="button" id="fetch-result">Fetch worker result</button>':"";
+ openModal('<h2>'+esc(j.title)+'</h2><dl class="detail-list">'+details+'</dl>'+humanResult(j)+'<div id="fetch-error" style="color:#ffb4b4;margin:10px 0"></div><label class="field">Payload</label><pre>'+esc(JSON.stringify(j.payload,null,2))+'</pre>'+(j.error?'<label class="field">Error</label><pre>'+esc(j.error)+'</pre>':'')+(j.result?'<label class="field">Technical result</label><pre>'+esc(JSON.stringify(j.result,null,2))+'</pre>':'')+'<label class="field">Activity log</label>'+(events||'<p>No events</p>')+'<div class="dialog-footer">'+fetchBtn+'<button class="btn" id="close">Close</button></div>');
+ $("close").onclick=closeModal;
+ if(canFetch) $("fetch-result").onclick=async()=>{
+   const button=$("fetch-result");
+   button.disabled=true;
+   button.textContent="Fetching…";
+   try {
+     await api("/jobs/"+id+"/fetch-result",{method:"POST"});
+     await showDetails(id);
+     await refresh();
+   } catch(err){
+     $("fetch-error").textContent=err.message;
+     button.disabled=false;
+     button.textContent="Try again";
+   }
+ };
+}
+$("jobs").addEventListener("click",async e=>{
+ const button=e.target.closest("button[data-action]");
+ if(!button)return;
+ const {action,id}=button.dataset;
+ const job=jobs.find(j=>j.id===id);
+ if(!job)return;
+ try{
+  if(action==="edit"){openEditor(job);return;}
+  if(action==="view"){await showDetails(id);return;}
+  if(action==="delete"&&!confirm("Permanently delete this job and its local event history?"))return;
+  if(action==="retry"&&!confirm("Retry this job? Verify that the previous remote execution is not still running."))return;
+  if(action==="delete")await api("/jobs/"+id,{method:"DELETE"});
+  else await api("/jobs/"+id+"/"+action,{method:"POST"});
+  await refresh();
+ }catch(err){error(err.message);}
+});
+$("new").onclick=()=>openEditor();
+$("search").oninput=render;
+$("filter").onchange=render;
+window.addEventListener("keydown",e=>{if(e.key==="Escape"&&!$("modal").hidden)closeModal();});
+refresh();
+api("/health").then(h=>{
+ $("gcp-status").textContent=h.gcp_configured ? "GCP: "+h.gcp_project+" / "+h.gcp_region+" / "+h.gcp_job : "GCP: configure environment";
+ $("gcp-status").textContent += h.runpod_configured ? " · RunPod ready" : " · RunPod not configured";
+}).catch(()=>{$("gcp-status").textContent="Cloud providers: offline";});
+setInterval(()=>{if($("modal").hidden)refresh();},3000);
+</script>
+</body>
+</html>
++g.price.toFixed(2)+'/h':'')+'</option>').join("");
+     if(prev&&list.some(g=>g.id===prev))$("gpu-choice").value=prev;
+     else if(list.length===1)$("gpu-choice").value=list[0].id;
+     $("gpu-info").textContent=list.length?list.length+" GPU types currently listed as available for "+tier+" (16 GB+ VRAM). Stock may change.":"No GPUs with 16 GB+ VRAM currently listed for "+tier+". Try the other tier.";
+   }catch(err){
+     $("gpu-choice").innerHTML='<option value="">GPU lookup failed</option>';
+     $("gpu-info").textContent=err.message;
+   }
+ }
+ const oldProviderChange=$("provider").onchange;
+ $("provider").onchange=()=>{oldProviderChange();loadGpus();};
+ $("gpu-refresh").onclick=loadGpus;
+ loadGpus();
  $("enqueue").checked=false;
  $("close").onclick=closeModal;
  $("job-form").onsubmit=async e=>{
