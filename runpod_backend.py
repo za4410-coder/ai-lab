@@ -222,3 +222,98 @@ def cleanup_orphans():
                 mark_terminated(row["id"])
         except Exception as exc:
             print("WARNING: RunPod pod may still incur charges for job {}: {}".format(row["id"], exc), flush=True)
+
+
+def live_details(job, with_logs=True):
+    """Return sanitized live Pod telemetry for a specific AI Lab job, never API credentials."""
+    import datetime
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    pod_id = result.get("runpod_id")
+    if not pod_id or not re.fullmatch(r"[A-Za-z0-9_-]{3,80}", pod_id):
+        return {"active": False, "message": "Pod has not been provisioned yet.", "pod_id": None}
+    data = {"pod_id": pod_id, "active": not result.get("terminated", False),
+            "terminated": bool(result.get("terminated", False)),
+            "cloud": "COMMUNITY" if job["provider"] == "runpod-community" else "SECURE"}
+    if result.get("terminated"):
+        data["message"] = "Pod terminated; live telemetry is no longer available."
+        return data
+    key = os.getenv("RUNPOD_API_KEY", "").strip()
+    if not key:
+        return {**data, "error": "RUNPOD_API_KEY not configured"}
+    try:
+        pod = api_request("GET", API + "/" + pod_id, token=key, timeout=12)
+        runtime = pod.get("runtime") or {}
+        gpu = pod.get("gpu") or {}
+        if isinstance(gpu, str):
+            gpu = {"name": gpu}
+        rates = [pod.get("adjustedCostPerHr"), pod.get("costPerHr"), pod.get("cost")]
+        rate = next((v for v in rates if isinstance(v, (int, float)) and not isinstance(v, bool)), None)
+        elapsed = None
+        if job.get("started_at"):
+            try:
+                start = datetime.datetime.fromisoformat(job["started_at"])
+                elapsed = max(0, int((datetime.datetime.now(datetime.timezone.utc) - start).total_seconds()))
+            except (TypeError, ValueError):
+                pass
+        data.update({
+            "status": pod.get("status") or pod.get("desiredStatus") or "Unknown",
+            "gpu": gpu.get("name") or gpu.get("id") or job.get("payload", {}).get("gpu_id"),
+            "region": pod.get("dataCenterId"),
+            "hourly_rate": rate,
+            "elapsed_seconds": elapsed,
+            "estimated_compute_cost": round(rate * elapsed / 3600, 4) if rate is not None and elapsed is not None else None,
+            "runtime_seconds": runtime.get("uptime") or runtime.get("uptimeInSeconds"),
+            "gpu_metrics": [
+                {"utilization": g.get("util", g.get("gpuUtilPercent")),
+                 "memory_utilization": g.get("memoryUtil", g.get("memoryUtilPercent")),
+                 "temperature": g.get("temperature")}
+                for g in (runtime.get("gpus") or []) if isinstance(g, dict)
+            ],
+            "cpu_utilization": (runtime.get("cpu") or {}).get("util") if isinstance(runtime.get("cpu"), dict) else None,
+            "memory_utilization": (runtime.get("memory") or {}).get("util") if isinstance(runtime.get("memory"), dict) else None,
+        })
+    except Exception as exc:
+        data["error"] = "Pod telemetry unavailable: " + str(exc)[:350]
+    if with_logs:
+        try:
+            data["logs"] = recent_logs(pod_id, key)
+        except Exception as exc:
+            data["logs_error"] = "Live logs unavailable: " + str(exc)[:200]
+    return data
+
+
+def recent_logs(pod_id, key):
+    """Read a bounded portion of RunPod's SSE container logs. Never expose credentials."""
+    import socket
+    from urllib.parse import urlencode
+    url = API + "/" + pod_id + "/logs?" + urlencode({"source": "container", "tail": 60})
+    req = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + key,
+        "Accept": "text/event-stream"
+    })
+    chunks = []
+    total = 0
+    try:
+        with urllib.request.urlopen(req, timeout=3) as response:
+            until = time.monotonic() + 2.0
+            while time.monotonic() < until and total < 24000:
+                try:
+                    line = response.readline(2048)
+                except (TimeoutError, socket.timeout):
+                    break
+                if not line:
+                    break
+                if line.startswith(b"data:"):
+                    text = line[5:].decode("utf-8", errors="replace").strip()
+                    try:
+                        event = json.loads(text)
+                        if isinstance(event, dict):
+                            text = str(event.get("message") or event.get("line") or event.get("log") or text)
+                    except ValueError:
+                        pass
+                    chunks.append(text[:1000])
+                    total += len(text)
+    except (TimeoutError, socket.timeout):
+        pass
+    return chunks[-60:]
+
